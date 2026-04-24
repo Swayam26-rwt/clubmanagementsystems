@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
 
+import secrets
 import bcrypt
 import jwt as pyjwt
 import httpx
@@ -171,6 +172,13 @@ class ProposalIn(BaseModel):
     title: str
     description: str
 
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+class ResetPasswordIn(BaseModel):
+    token: str
+    password: str = Field(min_length=6)
+
 # ---------------------------------------------------------------------------
 # Auth endpoints
 # ---------------------------------------------------------------------------
@@ -222,6 +230,58 @@ async def logout(response: Response):
 @api.get('/auth/me')
 async def me(user: dict = Depends(get_current_user)):
     return user
+
+@api.post('/auth/forgot-password')
+async def forgot_password(data: ForgotPasswordIn, request: Request):
+    email = data.email.lower()
+    user = await db.users.find_one({'email': email}, {'_id': 0})
+    # Always respond with success to avoid user enumeration
+    if user and user.get('password_hash'):
+        token = secrets.token_urlsafe(32)
+        await db.password_reset_tokens.insert_one({
+            'token': token,
+            'user_id': user['user_id'],
+            'email': email,
+            'expires_at': (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            'used': False,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+        })
+        origin = request.headers.get('origin') or request.headers.get('referer', '').rstrip('/')
+        reset_link = f"{origin}/reset-password?token={token}"
+        html = f"""
+        <div style="font-family:Helvetica,Arial,sans-serif;color:#111;max-width:520px;margin:auto;">
+          <h2 style="letter-spacing:-0.02em;">RESET YOUR PASSWORD</h2>
+          <p>Hello {user.get('name') or 'there'}, we received a request to reset your password for THE MOMENT CLUB.</p>
+          <p><a href="{reset_link}" style="display:inline-block;background:#000;color:#fff;padding:12px 20px;text-decoration:none;letter-spacing:0.1em;text-transform:uppercase;font-weight:700;">Reset password</a></p>
+          <p style="color:#666;font-size:12px;">Or copy this link: {reset_link}</p>
+          <p style="color:#666;font-size:12px;">This link expires in 1 hour. If you didn't request this, ignore this email.</p>
+          <p>— THE MOMENT CLUB</p>
+        </div>
+        """
+        logger.info(f'Password reset link for {email}: {reset_link}')
+        asyncio.create_task(send_email([email], '[THE MOMENT CLUB] Reset your password', html))
+    return {'ok': True, 'message': 'If an account exists for this email, a reset link has been sent.'}
+
+@api.post('/auth/reset-password')
+async def reset_password(data: ResetPasswordIn):
+    doc = await db.password_reset_tokens.find_one({'token': data.token}, {'_id': 0})
+    if not doc:
+        raise HTTPException(status_code=400, detail='Invalid or expired token')
+    if doc.get('used'):
+        raise HTTPException(status_code=400, detail='Token already used')
+    exp = doc.get('expires_at')
+    if isinstance(exp, str):
+        exp = datetime.fromisoformat(exp)
+    if exp and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if not exp or exp < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail='Invalid or expired token')
+    await db.users.update_one(
+        {'user_id': doc['user_id']},
+        {'$set': {'password_hash': hash_password(data.password)}},
+    )
+    await db.password_reset_tokens.update_one({'token': data.token}, {'$set': {'used': True}})
+    return {'ok': True}
 
 @api.post('/auth/google/session')
 async def google_session(data: GoogleSessionIn, response: Response):
@@ -351,6 +411,22 @@ async def register_event(event_id: str, user: dict = Depends(get_current_user)):
         'registered_at': datetime.now(timezone.utc).isoformat(),
     })
     await db.events.update_one({'event_id': event_id}, {'$inc': {'registered_count': 1}})
+
+    # Confirmation email to participant
+    html = f"""
+    <div style="font-family:Helvetica,Arial,sans-serif;color:#111;max-width:520px;margin:auto;">
+      <h2 style="letter-spacing:-0.02em;">YOU'RE IN · {evt['title']}</h2>
+      <p>Hello {user.get('name') or 'builder'}, your registration for <strong>{evt['title']}</strong> is confirmed.</p>
+      <table style="border-collapse:collapse;margin:16px 0;">
+        <tr><td style="padding:4px 12px 4px 0;color:#666;">DATE</td><td style="padding:4px 0;">{evt.get('date','')}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666;">LOCATION</td><td style="padding:4px 0;">{evt.get('location','')}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666;">CATEGORY</td><td style="padding:4px 0;">{evt.get('category','')}</td></tr>
+      </table>
+      <p>{evt.get('description','')}</p>
+      <p>— THE MOMENT CLUB</p>
+    </div>
+    """
+    asyncio.create_task(send_email([user['email']], f"[THE MOMENT CLUB] Registered · {evt['title']}", html))
     return {'ok': True}
 
 @api.get('/events/{event_id}/registrations')

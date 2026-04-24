@@ -121,6 +121,8 @@ export default function Login() {
           </button>
 
           <div className="mt-8 font-mono text-xs tracking-widest uppercase opacity-70">
+            <Link to="/forgot-password" data-testid="login-forgot-link" className="underline underline-offset-4 text-white/80">FORGOT PASSWORD?</Link>
+            <span className="mx-2 opacity-40">·</span>
             NEW HERE?{' '}
             <Link to="/register" data-testid="login-register-link" className="underline underline-offset-4 text-white">REGISTER →</Link>
           </div>

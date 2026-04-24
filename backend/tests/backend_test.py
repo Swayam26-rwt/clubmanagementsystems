@@ -1,8 +1,11 @@
 """Backend tests for THE MOMENT CLUB."""
 import os, uuid, pytest, requests
+from pymongo import MongoClient
 
 BASE = os.environ.get('REACT_APP_BACKEND_URL', 'https://cu-club-manager.preview.emergentagent.com').rstrip('/')
 API = f'{BASE}/api'
+MONGO_URL = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+DB_NAME = os.environ.get('DB_NAME', 'test_database')
 
 ADMIN = {'email': 'core@themomentclub.in', 'password': 'admin123'}
 SUFFIX = uuid.uuid4().hex[:8]
@@ -171,3 +174,144 @@ class TestProposalsAndCleanup:
             assert admin_sess.delete(f'{API}/events/{eid}').status_code == 200
         if nid:
             assert admin_sess.delete(f'{API}/notifications/{nid}').status_code == 200
+
+
+# =============== Iteration 2: Password reset + Event registration email ===============
+
+class TestForgotPassword:
+    """POST /api/auth/forgot-password should return 200 generic message for any email and create
+    a password_reset_tokens document only when the user exists."""
+
+    def test_forgot_password_existing_user(self):
+        # Member was created earlier in this run; but isolate with a fresh user to be safe
+        email = f'TEST_fp_{uuid.uuid4().hex[:8]}@themomentclub.in'
+        reg = requests.post(f'{API}/auth/register', json={
+            'email': email, 'password': 'pw123456', 'name': 'FP User', 'role': 'member',
+        })
+        assert reg.status_code == 200, reg.text
+
+        r = requests.post(f'{API}/auth/forgot-password', json={'email': email})
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data.get('ok') is True
+        assert 'message' in data and 'reset' in data['message'].lower()
+
+        # Verify document created in MongoDB
+        mc = MongoClient(MONGO_URL)
+        try:
+            doc = mc[DB_NAME].password_reset_tokens.find_one({'email': email.lower()})
+            assert doc is not None, 'password_reset_tokens not created for existing user'
+            assert doc.get('used') is False
+            assert doc.get('token') and len(doc['token']) > 20
+        finally:
+            mc.close()
+
+    def test_forgot_password_nonexistent_user_returns_200_no_enumeration(self):
+        email = f'nonexistent_{uuid.uuid4().hex[:8]}@example.com'
+        r = requests.post(f'{API}/auth/forgot-password', json={'email': email})
+        assert r.status_code == 200, r.text
+        data = r.json()
+        # Same generic success message — no enumeration
+        assert data.get('ok') is True
+        assert 'If an account exists' in data.get('message', '') or 'reset' in data.get('message', '').lower()
+
+        mc = MongoClient(MONGO_URL)
+        try:
+            doc = mc[DB_NAME].password_reset_tokens.find_one({'email': email.lower()})
+            assert doc is None, 'Token should NOT be created for non-existing user'
+        finally:
+            mc.close()
+
+
+class TestResetPassword:
+    """POST /api/auth/reset-password — validates token, updates password, single-use."""
+
+    @pytest.fixture(scope='class')
+    def reset_flow_user(self):
+        email = f'TEST_rp_{uuid.uuid4().hex[:8]}@themomentclub.in'
+        reg = requests.post(f'{API}/auth/register', json={
+            'email': email, 'password': 'old_pw_123', 'name': 'RP User', 'role': 'member',
+        })
+        assert reg.status_code == 200, reg.text
+
+        fp = requests.post(f'{API}/auth/forgot-password', json={'email': email})
+        assert fp.status_code == 200
+
+        mc = MongoClient(MONGO_URL)
+        try:
+            doc = mc[DB_NAME].password_reset_tokens.find_one({'email': email.lower(), 'used': False})
+        finally:
+            mc.close()
+        assert doc and doc.get('token'), 'Reset token not created'
+        return {'email': email, 'token': doc['token']}
+
+    def test_reset_password_bad_token(self):
+        r = requests.post(f'{API}/auth/reset-password', json={
+            'token': 'not-a-real-token-xxxxxxxx', 'password': 'newpass123',
+        })
+        assert r.status_code == 400, r.text
+
+    def test_reset_password_with_valid_token(self, reset_flow_user):
+        email = reset_flow_user['email']
+        token = reset_flow_user['token']
+        new_pw = 'new_pw_456'
+
+        r = requests.post(f'{API}/auth/reset-password', json={'token': token, 'password': new_pw})
+        assert r.status_code == 200, r.text
+        assert r.json().get('ok') is True
+
+        # Verify token marked as used in DB
+        mc = MongoClient(MONGO_URL)
+        try:
+            doc = mc[DB_NAME].password_reset_tokens.find_one({'token': token})
+            assert doc is not None and doc.get('used') is True
+        finally:
+            mc.close()
+
+        # Old password should fail
+        old_login = requests.post(f'{API}/auth/login', json={'email': email, 'password': 'old_pw_123'})
+        assert old_login.status_code == 401
+
+        # New password should succeed
+        new_login = requests.post(f'{API}/auth/login', json={'email': email, 'password': new_pw})
+        assert new_login.status_code == 200, new_login.text
+
+    def test_reset_password_token_reuse_fails(self, reset_flow_user):
+        # Same token was consumed in previous test — reuse should 400
+        r = requests.post(f'{API}/auth/reset-password', json={
+            'token': reset_flow_user['token'], 'password': 'another_pw_789',
+        })
+        assert r.status_code == 400, r.text
+
+
+class TestEventRegistrationEmail:
+    """POST /api/events/{id}/register should still return 200 (Resend email is fire-and-forget)."""
+
+    def test_event_register_sends_confirmation_returns_200(self, admin_sess):
+        # Create a dedicated event
+        payload = {
+            'title': f'TEST_REG_EMAIL_{uuid.uuid4().hex[:6]}',
+            'description': 'email test',
+            'date': '2026-07-15',
+            'location': 'CU',
+            'category': 'Workshop',
+            'capacity': 20,
+        }
+        r = admin_sess.post(f'{API}/events', json=payload)
+        assert r.status_code == 200, r.text
+        eid = r.json()['event_id']
+
+        # Register a fresh member
+        suf = uuid.uuid4().hex[:8]
+        m = {'email': f'TEST_regmail_{suf}@themomentclub.in', 'password': 'member123', 'name': 'RegMail', 'role': 'member'}
+        reg = requests.post(f'{API}/auth/register', json=m)
+        assert reg.status_code == 200
+        tok = reg.json()['access_token']
+        ms = requests.Session()
+        ms.headers.update({'Content-Type': 'application/json', 'Authorization': f'Bearer {tok}'})
+
+        rr = ms.post(f'{API}/events/{eid}/register')
+        assert rr.status_code == 200, rr.text
+
+        # Cleanup event
+        admin_sess.delete(f'{API}/events/{eid}')

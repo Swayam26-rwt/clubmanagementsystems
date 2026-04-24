@@ -6,6 +6,8 @@ import Landing from '@/pages/Landing';
 import Login from '@/pages/Login';
 import Register from '@/pages/Register';
 import AuthCallback from '@/pages/AuthCallback';
+import ForgotPassword from '@/pages/ForgotPassword';
+import ResetPassword from '@/pages/ResetPassword';
 import CoreTeamDashboard from '@/pages/CoreTeamDashboard';
 import FacultyDashboard from '@/pages/FacultyDashboard';
 import MemberDashboard from '@/pages/MemberDashboard';
@@ -36,6 +38,8 @@ function Router() {
       <Route path="/" element={<Landing />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
       <Route
         path="/dashboard/core"
         element={<Protected role="core_team"><CoreTeamDashboard /></Protected>}

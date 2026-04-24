@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import Marquee from 'react-fast-marquee';
 import { motion } from 'framer-motion';
-import { ArrowUpRight, Calendar, MapPin, Users, Zap } from 'lucide-react';
+import { ArrowUpRight, Calendar, MapPin, Users, Zap, Menu, X } from 'lucide-react';
 import { useAuth, dashboardPathFor } from '@/lib/auth';
 import { api } from '@/lib/api';
 
@@ -24,6 +24,7 @@ export default function Landing() {
   const [notifications, setNotifications] = useState([]);
   const [events, setEvents] = useState([]);
   const [stats, setStats] = useState({ events: 0, members: 0, hackathons: 0 });
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     api.get('/notifications').then(r => setNotifications(r.data)).catch(() => {});
@@ -60,9 +61,53 @@ export default function Landing() {
                 <Link to="/register" data-testid="nav-register-btn" className="btn-inv px-4 py-2 font-display font-bold uppercase text-xs tracking-widest">Join</Link>
               </>
             )}
+            <button
+              onClick={() => setMenuOpen(true)}
+              data-testid="nav-hamburger-btn"
+              className="md:hidden ml-1 w-10 h-10 border border-white/20 grid place-items-center hover:bg-white hover:text-black transition-colors"
+              aria-label="Open menu"
+            >
+              <Menu size={18} />
+            </button>
           </div>
         </div>
       </header>
+
+      {/* MOBILE MENU OVERLAY */}
+      {menuOpen && (
+        <div className="fixed inset-0 z-[60] bg-black text-white md:hidden" data-testid="mobile-menu">
+          <div className="h-16 px-6 flex items-center justify-between border-b border-white/10">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 border border-white/60 grid place-items-center font-display font-black text-[10px]">TMC</div>
+              <div className="font-display font-black uppercase tracking-[0.2em] text-sm">The Moment Club</div>
+            </div>
+            <button onClick={() => setMenuOpen(false)} data-testid="mobile-menu-close" className="w-10 h-10 border border-white/20 grid place-items-center" aria-label="Close menu">
+              <X size={18} />
+            </button>
+          </div>
+          <nav className="p-6 flex flex-col gap-1">
+            {[
+              { href: '#about', label: 'ABOUT', testid: 'mobile-nav-about' },
+              { href: '#events', label: 'EVENTS', testid: 'mobile-nav-events' },
+              { href: '#team', label: 'TEAM', testid: 'mobile-nav-team' },
+            ].map(i => (
+              <a key={i.href} href={i.href} data-testid={i.testid} onClick={() => setMenuOpen(false)} className="py-5 border-b border-white/10 font-display text-4xl font-black uppercase tracking-tighter flex items-center justify-between">
+                {i.label} <ArrowUpRight size={24} />
+              </a>
+            ))}
+          </nav>
+          <div className="p-6 grid grid-cols-2 gap-3">
+            {user ? (
+              <button onClick={() => { setMenuOpen(false); goDash(); }} data-testid="mobile-nav-dashboard" className="col-span-2 btn-inv py-4 font-display font-bold uppercase text-sm tracking-widest">Dashboard</button>
+            ) : (
+              <>
+                <Link to="/login" data-testid="mobile-nav-login" onClick={() => setMenuOpen(false)} className="btn-outline-w py-4 font-display font-bold uppercase text-sm tracking-widest text-center">Sign In</Link>
+                <Link to="/register" data-testid="mobile-nav-register" onClick={() => setMenuOpen(false)} className="btn-inv py-4 font-display font-bold uppercase text-sm tracking-widest text-center">Join</Link>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* MARQUEE NOTIFICATION BAR */}
       <div className="fixed top-16 left-0 right-0 z-40 border-b border-white/10 bg-black" data-testid="notification-marquee">
