@@ -29,6 +29,12 @@ Make a club management website that manages a club in Chandigarh University with
 - Resend wired for event creation → notifies approved members.
 - Seeded admin (`core@themomentclub.in` / `admin123`) + sample events and notifications.
 
+## Implemented — 2026-02-24 (Iteration 2)
+- Password-reset flow: `/forgot-password` + `/reset-password` pages, `POST /api/auth/forgot-password` (anti-enumeration) and `POST /api/auth/reset-password` with 1hr token expiry.
+- Event registration confirmation email (Resend) to the registering member.
+- Mobile hamburger nav on Landing (414px breakpoint overlay with About/Events/Team + Sign In/Join).
+- 30/30 backend pytest passing.
+
 ## Backlog / Next Items
 - **P1:** Replace `allow_origins=['*']` + `allow_credentials=True` with explicit origin list for prod hardening.
 - **P1:** Brute-force lockout on `/api/auth/login` (5 attempts / 15 min).
