@@ -159,6 +159,9 @@ class EventIn(BaseModel):
     category: str = 'Hackathon'
     capacity: int = 100
     image_url: Optional[str] = None
+    winners: List[str] = []
+    photos: List[str] = []
+    prize_pool: Optional[str] = None
 
 class NotificationIn(BaseModel):
     message: str
@@ -178,6 +181,36 @@ class ForgotPasswordIn(BaseModel):
 class ResetPasswordIn(BaseModel):
     token: str
     password: str = Field(min_length=6)
+
+class TaskIn(BaseModel):
+    title: str
+    description: Optional[str] = ''
+    status: str = 'todo'           # todo | in_progress | review | done
+    priority: str = 'medium'        # low | medium | high | urgent
+    assignee_id: Optional[str] = None
+    due_date: Optional[str] = None  # ISO date
+    tags: List[str] = []
+
+class TaskUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    assignee_id: Optional[str] = None
+    due_date: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+class EventUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    date: Optional[str] = None
+    location: Optional[str] = None
+    category: Optional[str] = None
+    capacity: Optional[int] = None
+    image_url: Optional[str] = None
+    winners: Optional[List[str]] = None
+    photos: Optional[List[str]] = None
+    prize_pool: Optional[str] = None
 
 # ---------------------------------------------------------------------------
 # Auth endpoints
@@ -522,6 +555,116 @@ async def decide_proposal(proposal_id: str, decision: str, user: dict = Depends(
     return {'ok': True, 'status': status}
 
 # ---------------------------------------------------------------------------
+# Tasks (ClickUp-style)
+# ---------------------------------------------------------------------------
+TASK_STATUSES = {'todo', 'in_progress', 'review', 'done'}
+TASK_PRIORITIES = {'low', 'medium', 'high', 'urgent'}
+
+async def _resolve_assignee(assignee_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    if not assignee_id:
+        return None, None
+    u = await db.users.find_one({'user_id': assignee_id}, {'_id': 0, 'name': 1, 'user_id': 1})
+    if not u:
+        return None, None
+    return u['user_id'], u['name']
+
+@api.get('/tasks')
+async def list_tasks(user: dict = Depends(require_roles('core_team', 'faculty'))):
+    items = await db.tasks.find({}, {'_id': 0}).sort('created_at', -1).to_list(500)
+    return items
+
+@api.post('/tasks')
+async def create_task(data: TaskIn, user: dict = Depends(require_roles('core_team'))):
+    if data.status not in TASK_STATUSES:
+        raise HTTPException(status_code=400, detail='Invalid status')
+    if data.priority not in TASK_PRIORITIES:
+        raise HTTPException(status_code=400, detail='Invalid priority')
+    assignee_id, assignee_name = await _resolve_assignee(data.assignee_id)
+    doc = {
+        'task_id': f'task_{uuid.uuid4().hex[:10]}',
+        'title': data.title,
+        'description': data.description or '',
+        'status': data.status,
+        'priority': data.priority,
+        'assignee_id': assignee_id,
+        'assignee_name': assignee_name,
+        'due_date': data.due_date,
+        'tags': data.tags or [],
+        'created_by': user['user_id'],
+        'created_by_name': user['name'],
+        'created_at': datetime.now(timezone.utc).isoformat(),
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    }
+    await db.tasks.insert_one(doc)
+    doc.pop('_id', None)
+    return doc
+
+@api.patch('/tasks/{task_id}')
+async def update_task(task_id: str, data: TaskUpdate, user: dict = Depends(require_roles('core_team'))):
+    updates = {k: v for k, v in data.model_dump(exclude_unset=True).items() if v is not None}
+    if 'status' in updates and updates['status'] not in TASK_STATUSES:
+        raise HTTPException(status_code=400, detail='Invalid status')
+    if 'priority' in updates and updates['priority'] not in TASK_PRIORITIES:
+        raise HTTPException(status_code=400, detail='Invalid priority')
+    if 'assignee_id' in updates:
+        aid, aname = await _resolve_assignee(updates['assignee_id'])
+        updates['assignee_id'] = aid
+        updates['assignee_name'] = aname
+    updates['updated_at'] = datetime.now(timezone.utc).isoformat()
+    r = await db.tasks.update_one({'task_id': task_id}, {'$set': updates})
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail='Task not found')
+    doc = await db.tasks.find_one({'task_id': task_id}, {'_id': 0})
+    return doc
+
+@api.delete('/tasks/{task_id}')
+async def delete_task(task_id: str, user: dict = Depends(require_roles('core_team'))):
+    await db.tasks.delete_one({'task_id': task_id})
+    return {'ok': True}
+
+# ---------------------------------------------------------------------------
+# Team directory (for task assignment)
+# ---------------------------------------------------------------------------
+@api.get('/team')
+async def list_team(user: dict = Depends(require_roles('core_team', 'faculty'))):
+    items = await db.users.find(
+        {'role': {'$in': ['core_team', 'faculty']}},
+        {'_id': 0, 'password_hash': 0},
+    ).to_list(200)
+    # Attach task stats
+    for u in items:
+        u['open_tasks'] = await db.tasks.count_documents({'assignee_id': u['user_id'], 'status': {'$ne': 'done'}})
+        u['done_tasks'] = await db.tasks.count_documents({'assignee_id': u['user_id'], 'status': 'done'})
+    return items
+
+# ---------------------------------------------------------------------------
+# Event update / past events
+# ---------------------------------------------------------------------------
+@api.patch('/events/{event_id}')
+async def update_event(event_id: str, data: EventUpdate, user: dict = Depends(require_roles('core_team'))):
+    updates = {k: v for k, v in data.model_dump(exclude_unset=True).items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail='No fields to update')
+    updates['updated_at'] = datetime.now(timezone.utc).isoformat()
+    r = await db.events.update_one({'event_id': event_id}, {'$set': updates})
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail='Event not found')
+    doc = await db.events.find_one({'event_id': event_id}, {'_id': 0})
+    return doc
+
+@api.get('/events/past')
+async def list_past_events():
+    today = datetime.now(timezone.utc).date().isoformat()
+    items = await db.events.find({'date': {'$lt': today}}, {'_id': 0}).sort('date', -1).to_list(200)
+    return items
+
+@api.get('/events/upcoming')
+async def list_upcoming_events():
+    today = datetime.now(timezone.utc).date().isoformat()
+    items = await db.events.find({'date': {'$gte': today}}, {'_id': 0}).sort('date', 1).to_list(200)
+    return items
+
+# ---------------------------------------------------------------------------
 # My registrations
 # ---------------------------------------------------------------------------
 @api.get('/me/registrations')
@@ -563,6 +706,8 @@ async def startup():
     await db.users.create_index('user_id', unique=True)
     await db.sessions.create_index('session_token', unique=True)
     await db.events.create_index('event_id', unique=True)
+    await db.tasks.create_index('task_id', unique=True)
+    await db.password_reset_tokens.create_index('token', unique=True)
 
     admin_email = os.environ.get('ADMIN_EMAIL', 'core@themomentclub.in').lower()
     admin_pw = os.environ.get('ADMIN_PASSWORD', 'admin123')
@@ -603,40 +748,130 @@ async def startup():
                 'event_id': f'evt_{uuid.uuid4().hex[:10]}',
                 'title': 'HACKNITE 2026',
                 'description': '48-hour flagship hackathon. Build products that matter. Prizes worth ₹3L.',
-                'date': '2026-03-14',
+                'date': '2026-09-20',
                 'location': 'CU Main Auditorium',
                 'category': 'Hackathon',
                 'capacity': 300,
                 'image_url': 'https://static.prod-images.emergentagent.com/jobs/cb8b44b8-c919-4adb-aebd-9c5c55d5c593/images/2efaa331173c3cc6305b29b378693e2d5900c40169218ba127627f3ad5fa7e09.png',
                 'registered_count': 0,
+                'winners': [],
+                'photos': [],
+                'prize_pool': '₹3,00,000',
                 'created_at': datetime.now(timezone.utc).isoformat(),
             },
             {
                 'event_id': f'evt_{uuid.uuid4().hex[:10]}',
                 'title': 'SYSTEM DESIGN WORKSHOP',
                 'description': 'Deep dive with staff engineers from top product companies.',
-                'date': '2026-02-28',
+                'date': '2026-06-14',
                 'location': 'Block D · Room 204',
                 'category': 'Workshop',
                 'capacity': 80,
                 'image_url': 'https://images.pexels.com/photos/5380607/pexels-photo-5380607.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
                 'registered_count': 0,
+                'winners': [],
+                'photos': [],
                 'created_at': datetime.now(timezone.utc).isoformat(),
             },
             {
                 'event_id': f'evt_{uuid.uuid4().hex[:10]}',
                 'title': 'TECH TALK · AI AT SCALE',
                 'description': 'A guest lecture on production ML systems and vector infrastructure.',
-                'date': '2026-03-05',
+                'date': '2026-05-30',
                 'location': 'CU Auditorium 2',
                 'category': 'Tech Talk',
                 'capacity': 200,
                 'image_url': 'https://images.unsplash.com/photo-1646059525996-3510c86159f8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzOTB8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjB1bml2ZXJzaXR5JTIwYXJjaGl0ZWN0dXJlfGVufDB8fHxibGFja19hbmRfd2hpdGV8MTc3NjY3NTUzMnww&ixlib=rb-4.1.0&q=85',
                 'registered_count': 0,
+                'winners': [],
+                'photos': [],
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            },
+            # PAST EVENTS
+            {
+                'event_id': f'evt_{uuid.uuid4().hex[:10]}',
+                'title': 'HACKNITE 2025',
+                'description': 'Our flagship hackathon — 280 builders, 62 teams, 48 caffeine-fuelled hours.',
+                'date': '2025-10-18',
+                'location': 'CU Main Auditorium',
+                'category': 'Hackathon',
+                'capacity': 300,
+                'image_url': 'https://images.pexels.com/photos/7102/notes-macbook-study-conference.jpg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                'registered_count': 280,
+                'winners': ['Team Void — AI code-review agent', 'Team Halcyon — realtime ops dashboard', 'Team Parallel — WASM sandbox'],
+                'photos': [
+                    'https://images.pexels.com/photos/2977565/pexels-photo-2977565.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                    'https://images.pexels.com/photos/1181273/pexels-photo-1181273.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                    'https://images.pexels.com/photos/1181354/pexels-photo-1181354.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                ],
+                'prize_pool': '₹2,50,000',
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                'event_id': f'evt_{uuid.uuid4().hex[:10]}',
+                'title': 'DEVCONF · SPRING 2025',
+                'description': 'A single-day conference with talks from Razorpay, Zerodha and Swiggy engineers.',
+                'date': '2025-04-12',
+                'location': 'CU Auditorium 2',
+                'category': 'Conference',
+                'capacity': 400,
+                'image_url': 'https://images.pexels.com/photos/1181298/pexels-photo-1181298.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                'registered_count': 385,
+                'winners': [],
+                'photos': [
+                    'https://images.pexels.com/photos/1181263/pexels-photo-1181263.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                    'https://images.pexels.com/photos/1181677/pexels-photo-1181677.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                ],
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                'event_id': f'evt_{uuid.uuid4().hex[:10]}',
+                'title': 'OPEN SOURCE SUMMIT · 2024',
+                'description': 'Contributors day — 120 PRs merged across 14 Indian OSS projects.',
+                'date': '2024-11-23',
+                'location': 'Block D · Lab 3',
+                'category': 'Summit',
+                'capacity': 150,
+                'image_url': 'https://images.pexels.com/photos/5077047/pexels-photo-5077047.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                'registered_count': 144,
+                'winners': ['Top contributor — Aarav M.', 'Best first-PR — Ishita S.'],
+                'photos': [
+                    'https://images.pexels.com/photos/3861969/pexels-photo-3861969.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                ],
                 'created_at': datetime.now(timezone.utc).isoformat(),
             },
         ]
         await db.events.insert_many(samples)
+
+    # Seed sample tasks if empty
+    if await db.tasks.count_documents({}) == 0:
+        admin_user = await db.users.find_one({'email': admin_email}, {'_id': 0})
+        admin_id = admin_user['user_id'] if admin_user else None
+        admin_name = admin_user['name'] if admin_user else None
+        sample_tasks = [
+            ('Finalize HACKNITE 2026 venue contract', 'urgent', 'todo', '2026-03-01'),
+            ('Design hackathon poster v2', 'high', 'in_progress', '2026-02-26'),
+            ('Reach out to sponsors (Razorpay, Zerodha)', 'high', 'in_progress', '2026-02-25'),
+            ('Book judges for tech-talk', 'medium', 'review', '2026-02-24'),
+            ('Close Q1 budget review', 'low', 'done', '2026-02-15'),
+            ('Update member onboarding doc', 'medium', 'todo', None),
+        ]
+        for t, prio, status, due in sample_tasks:
+            await db.tasks.insert_one({
+                'task_id': f'task_{uuid.uuid4().hex[:10]}',
+                'title': t,
+                'description': '',
+                'status': status,
+                'priority': prio,
+                'assignee_id': admin_id,
+                'assignee_name': admin_name,
+                'due_date': due,
+                'tags': [],
+                'created_by': admin_id,
+                'created_by_name': admin_name,
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            })
 
 @app.on_event('shutdown')
 async def shutdown():

@@ -315,3 +315,194 @@ class TestEventRegistrationEmail:
 
         # Cleanup event
         admin_sess.delete(f'{API}/events/{eid}')
+
+
+# =============== Iteration 3: Tasks CRUD + Team + Past/Upcoming events + Event PATCH ===============
+
+class TestTasks:
+    """Tasks CRUD: core_team creates/updates/deletes, faculty reads, member is 403."""
+
+    def test_tasks_list_member_403(self, member_sess):
+        assert member_sess.get(f'{API}/tasks').status_code == 403
+
+    def test_tasks_list_admin(self, admin_sess):
+        r = admin_sess.get(f'{API}/tasks')
+        assert r.status_code == 200
+        assert isinstance(r.json(), list)
+        # Seeded 6 tasks expected on clean install; at least 1
+        assert len(r.json()) >= 1
+
+    def test_tasks_list_faculty(self, faculty_sess):
+        r = faculty_sess.get(f'{API}/tasks')
+        assert r.status_code == 200
+
+    def test_create_task_and_assignee_resolution(self, admin_sess):
+        # Resolve admin user_id via /auth/me
+        me = admin_sess.get(f'{API}/auth/me').json()
+        admin_id = me['user_id']
+        payload = {
+            'title': f'TEST_TASK_{SUFFIX}',
+            'description': 'pytest task',
+            'status': 'todo',
+            'priority': 'high',
+            'assignee_id': admin_id,
+            'due_date': '2026-04-01',
+            'tags': ['pytest'],
+        }
+        r = admin_sess.post(f'{API}/tasks', json=payload)
+        assert r.status_code == 200, r.text
+        t = r.json()
+        assert t['task_id'].startswith('task_')
+        assert t['assignee_id'] == admin_id
+        # assignee_name auto-resolved
+        assert t['assignee_name'] == me['name']
+        assert t['priority'] == 'high'
+        assert t['status'] == 'todo'
+        pytest.shared_task_id = t['task_id']
+
+        # GET verify persistence
+        lst = admin_sess.get(f'{API}/tasks').json()
+        assert any(x['task_id'] == t['task_id'] for x in lst)
+
+    def test_create_task_invalid_status(self, admin_sess):
+        r = admin_sess.post(f'{API}/tasks', json={'title': 't', 'status': 'bogus', 'priority': 'low'})
+        assert r.status_code == 400
+
+    def test_create_task_invalid_priority(self, admin_sess):
+        r = admin_sess.post(f'{API}/tasks', json={'title': 't', 'status': 'todo', 'priority': 'nope'})
+        assert r.status_code == 400
+
+    def test_member_cannot_create_task(self, member_sess):
+        r = member_sess.post(f'{API}/tasks', json={'title': 'x', 'status': 'todo', 'priority': 'low'})
+        assert r.status_code == 403
+
+    def test_faculty_cannot_create_task(self, faculty_sess):
+        r = faculty_sess.post(f'{API}/tasks', json={'title': 'x', 'status': 'todo', 'priority': 'low'})
+        assert r.status_code == 403
+
+    def test_update_task_status_drag(self, admin_sess):
+        tid = getattr(pytest, 'shared_task_id', None)
+        assert tid
+        r = admin_sess.patch(f'{API}/tasks/{tid}', json={'status': 'in_progress'})
+        assert r.status_code == 200, r.text
+        assert r.json()['status'] == 'in_progress'
+        # Verify via GET
+        lst = admin_sess.get(f'{API}/tasks').json()
+        found = [x for x in lst if x['task_id'] == tid][0]
+        assert found['status'] == 'in_progress'
+
+    def test_update_task_invalid_status(self, admin_sess):
+        tid = getattr(pytest, 'shared_task_id', None)
+        r = admin_sess.patch(f'{API}/tasks/{tid}', json={'status': 'bogus'})
+        assert r.status_code == 400
+
+    def test_update_task_not_found(self, admin_sess):
+        r = admin_sess.patch(f'{API}/tasks/task_nope_404', json={'status': 'done'})
+        assert r.status_code == 404
+
+    def test_member_cannot_update_task(self, member_sess):
+        tid = getattr(pytest, 'shared_task_id', None)
+        r = member_sess.patch(f'{API}/tasks/{tid}', json={'status': 'done'})
+        assert r.status_code == 403
+
+    def test_delete_task(self, admin_sess):
+        tid = getattr(pytest, 'shared_task_id', None)
+        assert admin_sess.delete(f'{API}/tasks/{tid}').status_code == 200
+        lst = admin_sess.get(f'{API}/tasks').json()
+        assert not any(x['task_id'] == tid for x in lst)
+
+
+class TestTeam:
+    """GET /api/team — core_team + faculty list with task stats."""
+
+    def test_team_member_403(self, member_sess):
+        assert member_sess.get(f'{API}/team').status_code == 403
+
+    def test_team_list_admin(self, admin_sess):
+        r = admin_sess.get(f'{API}/team')
+        assert r.status_code == 200
+        data = r.json()
+        assert isinstance(data, list) and len(data) >= 1
+        roles = {u['role'] for u in data}
+        assert roles.issubset({'core_team', 'faculty'})
+        for u in data:
+            assert 'open_tasks' in u and 'done_tasks' in u
+            assert isinstance(u['open_tasks'], int)
+            assert isinstance(u['done_tasks'], int)
+
+    def test_team_list_faculty(self, faculty_sess):
+        r = faculty_sess.get(f'{API}/team')
+        assert r.status_code == 200
+
+
+class TestEventPatch:
+    """PATCH /api/events/{id} — updates winners/photos/prize_pool/etc."""
+
+    def test_patch_event_winners_photos(self, admin_sess):
+        # Create a test event
+        payload = {'title': f'TEST_PATCH_EVT_{SUFFIX}', 'description': 'x', 'date': '2026-08-01', 'location': 'L', 'category': 'Hackathon', 'capacity': 10}
+        r = admin_sess.post(f'{API}/events', json=payload)
+        eid = r.json()['event_id']
+
+        updates = {
+            'winners': ['Team Alpha', 'Team Beta'],
+            'photos': ['https://example.com/1.jpg', 'https://example.com/2.jpg'],
+            'prize_pool': '₹1,00,000',
+            'title': 'TEST_PATCHED_TITLE',
+        }
+        r2 = admin_sess.patch(f'{API}/events/{eid}', json=updates)
+        assert r2.status_code == 200, r2.text
+        d = r2.json()
+        assert d['winners'] == updates['winners']
+        assert d['photos'] == updates['photos']
+        assert d['prize_pool'] == '₹1,00,000'
+        assert d['title'] == 'TEST_PATCHED_TITLE'
+
+        # Verify persisted via GET
+        evts = requests.get(f'{API}/events').json()
+        found = [e for e in evts if e['event_id'] == eid][0]
+        assert found['winners'] == updates['winners']
+        assert found['prize_pool'] == '₹1,00,000'
+
+        # Cleanup
+        admin_sess.delete(f'{API}/events/{eid}')
+
+    def test_patch_event_not_found(self, admin_sess):
+        r = admin_sess.patch(f'{API}/events/evt_nope_404', json={'title': 'x'})
+        assert r.status_code == 404
+
+    def test_patch_event_member_403(self, member_sess):
+        r = member_sess.patch(f'{API}/events/evt_any', json={'title': 'x'})
+        assert r.status_code == 403
+
+
+class TestPastUpcomingEvents:
+    """GET /api/events/past and /api/events/upcoming — public, date-filtered."""
+
+    def test_past_events_public(self):
+        r = requests.get(f'{API}/events/past')
+        assert r.status_code == 200
+        data = r.json()
+        assert isinstance(data, list)
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).date().isoformat()
+        for e in data:
+            assert e['date'] < today, f"Past event has future date: {e['date']}"
+        # seed has 3 past events (HACKNITE 2025, DEVCONF 2025, OSS SUMMIT 2024)
+        assert len(data) >= 3
+        titles = [e['title'] for e in data]
+        assert any('HACKNITE 2025' in t for t in titles)
+
+    def test_upcoming_events_public(self):
+        r = requests.get(f'{API}/events/upcoming')
+        assert r.status_code == 200
+        data = r.json()
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).date().isoformat()
+        for e in data:
+            assert e['date'] >= today, f"Upcoming event has past date: {e['date']}"
+
+    def test_past_and_upcoming_are_disjoint(self):
+        past_ids = {e['event_id'] for e in requests.get(f'{API}/events/past').json()}
+        up_ids = {e['event_id'] for e in requests.get(f'{API}/events/upcoming').json()}
+        assert past_ids.isdisjoint(up_ids)

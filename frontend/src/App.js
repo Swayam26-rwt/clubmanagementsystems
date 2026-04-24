@@ -8,6 +8,7 @@ import Register from '@/pages/Register';
 import AuthCallback from '@/pages/AuthCallback';
 import ForgotPassword from '@/pages/ForgotPassword';
 import ResetPassword from '@/pages/ResetPassword';
+import PastEvents from '@/pages/PastEvents';
 import CoreTeamDashboard from '@/pages/CoreTeamDashboard';
 import FacultyDashboard from '@/pages/FacultyDashboard';
 import MemberDashboard from '@/pages/MemberDashboard';
@@ -40,6 +41,7 @@ function Router() {
       <Route path="/register" element={<Register />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/past-events" element={<PastEvents />} />
       <Route
         path="/dashboard/core"
         element={<Protected role="core_team"><CoreTeamDashboard /></Protected>}

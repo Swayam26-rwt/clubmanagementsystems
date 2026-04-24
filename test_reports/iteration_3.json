@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 3 E2E testing: Tasks CRUD + RBAC, Team directory, PATCH events, past/upcoming events (backend), and ClickUp-style CoreTeamDashboard + public /past-events page (frontend). Added 22 new pytest cases to backend_test.py — 52/52 pass (all prior 30 green + 22 new). Frontend Playwright covered: /past-events public page (stats, 3 past events, photo lightbox, back link), Landing nav-past link navigation, login as core admin, all 7 sidebar nav items (home, tasks, team, events, members, announcements, marquee) switch views without URL change, 4 kanban columns visible, 12 seeded task cards rendered, task-new-btn opens modal and creates task (Task created toast + new card appears under col-todo), Team view lists 4 members, Events view lists all events with event-edit buttons and edit modal opens with evt-winners / evt-photos / evt-prize fields.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "CoreTeamDashboard TaskModal assignee select", "issues": ["React hydration warning in console: '<span> cannot be a child of <option>'. Root cause is an Emergent-injected dynamic wrapper <span data-ve-dynamic='true'> being placed inside the <option> element rendered from the team.map expression (CoreTeamDashboard.jsx ~line 649). Non-blocking (select works and task creation succeeds) but pollutes console and can cause hydration mismatches. Consider rendering the option text via a string literal not an expression span wrapper — e.g. pre-compute a label variable."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_iter3.xml"
+  ],
+  "action_items": [
+    "(low) Address React hydration warning in TaskModal <option> rendering to keep console clean."
+  ],
+  "critical_code_review_comments": [
+    "server.py list_team performs N+1 count_documents queries (2 per user) — acceptable at current scale (~dozens of core_team+faculty) but consider a single aggregation $facet or $lookup for scale.",
+    "update_task strips `None` via comprehension — this means a PATCH cannot explicitly clear fields (e.g. set due_date to null or assignee_id to null). If 'unassign' is a product requirement, distinguish 'omitted' vs 'explicit null' with a sentinel.",
+    "TASK_STATUSES / TASK_PRIORITIES sets are good; consider moving to Literal[...] in Pydantic model for earlier (422) validation instead of manual 400 check.",
+    "update_event also discards explicit `None` — same caveat for clearing winners/photos/prize_pool.",
+    "CoreTeamDashboard.jsx is ~700+ lines with sidebar + kanban + team + events + members + announcements + marquee + modals all in one file — would benefit from splitting into route-level or view-level components for maintainability.",
+    "CORS middleware still uses allow_origins=['*'] with allow_credentials=True — browsers ignore credentials with '*', which is why cookie auth falls back to Bearer header. For production tighten to the preview/production origin explicitly.",
+    "Tasks endpoints do not emit any audit trail (created_by captured but no history on status transitions) — fine for MVP but log patches for future analytics."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py"
+  ],
+  "success_rate": {"backend": "100% (52/52 pytest; 22/22 new iteration-3 tests)", "frontend": "100% of iteration-3 flows exercised"},
+  "test_credentials": "core@themomentclub.in / admin123 (seeded core_team). Dynamic TEST_fac_*/TEST_mem_*/TEST_rp_*/TEST_fp_* users are auto-created per run.",
+  "seed_data_creation": "Tests create TEST_TASK_{suf} (deleted), TEST_PATCH_EVT_{suf} (deleted), TEST_UI_TASK via Playwright (kept). Dynamic TEST_fac_*/TEST_mem_* users persist (prefixed TEST_ for cleanup).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "backend_test.py now contains 4 new classes: TestTasks (13 cases), TestTeam (3), TestEventPatch (3), TestPastUpcomingEvents (3). All 52 tests green. Seed dataset: 3 past events (HACKNITE 2025, DEVCONF SPRING 2025, OPEN SOURCE SUMMIT 2024), 3 upcoming (HACKNITE 2026, SYSTEM DESIGN WORKSHOP, TECH TALK · AI AT SCALE), 6 tasks assigned to seeded admin. /past-events public page validates disjoint date filtering. CoreTeamDashboard uses HTML5 drag-drop for kanban — Playwright verified status change via task creation modal path (task-new-btn → col-todo placement) since native drag is fragile under automation; PATCH status flow covered at API level (test_update_task_status_drag).",
+  "rca of the issue": "No open bugs. Only minor React console warning (span-in-option hydration) — non-blocking; originates in Emergent dev-time dynamic attribute wrapper, not in user code logic."
+}

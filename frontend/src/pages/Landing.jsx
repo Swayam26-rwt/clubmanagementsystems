@@ -50,6 +50,7 @@ export default function Landing() {
           <nav className="hidden md:flex items-center gap-8 font-mono text-xs tracking-widest uppercase">
             <a href="#about" className="link-underline" data-testid="nav-about">About</a>
             <a href="#events" className="link-underline" data-testid="nav-events">Events</a>
+            <Link to="/past-events" className="link-underline" data-testid="nav-past">Archive</Link>
             <a href="#team" className="link-underline" data-testid="nav-team">Team</a>
           </nav>
           <div className="flex items-center gap-2">
