@@ -35,6 +35,15 @@ Make a club management website that manages a club in Chandigarh University with
 - Mobile hamburger nav on Landing (414px breakpoint overlay with About/Events/Team + Sign In/Join).
 - 30/30 backend pytest passing.
 
+## Implemented — 2026-04-20 (Iteration 3)
+- **ClickUp-style Core Team Dashboard** with left sidebar (Home, Tasks, Team, Events, Members, Announcements, Marquee).
+  - Tasks Kanban: 4 columns (To Do · In Progress · Review · Done), native HTML5 drag-drop to change status, priority chips, assignee avatars, due dates, search + assignee filter.
+  - Team directory with open/done task stats per member.
+  - Event cards now editable with winners, photos, prize pool.
+- **Past Events public gallery** at `/past-events`: hero stats, per-event block with winners list, photo grid + lightbox, prize pool, linked from Landing nav (desktop + mobile).
+- Backend: `/api/tasks` CRUD, `/api/team`, `/api/events/{id}` PATCH, `/api/events/past`, `/api/events/upcoming`.
+- 52/52 backend pytest passing. Seed: 3 past + 3 upcoming events, 6 starter tasks.
+
 ## Backlog / Next Items
 - **P1:** Replace `allow_origins=['*']` + `allow_credentials=True` with explicit origin list for prod hardening.
 - **P1:** Brute-force lockout on `/api/auth/login` (5 attempts / 15 min).
