@@ -631,10 +631,26 @@ async def list_team(user: dict = Depends(require_roles('core_team', 'faculty')))
         {'role': {'$in': ['core_team', 'faculty']}},
         {'_id': 0, 'password_hash': 0},
     ).to_list(200)
-    # Attach task stats
+    # Single aggregation to compute task counts for all assignees at once
+    agg = await db.tasks.aggregate([
+        {'$match': {'assignee_id': {'$ne': None}}},
+        {'$group': {
+            '_id': {'assignee_id': '$assignee_id', 'done': {'$eq': ['$status', 'done']}},
+            'count': {'$sum': 1},
+        }},
+    ]).to_list(1000)
+    stats: dict = {}
+    for row in agg:
+        aid = row['_id']['assignee_id']
+        s = stats.setdefault(aid, {'open': 0, 'done': 0})
+        if row['_id']['done']:
+            s['done'] += row['count']
+        else:
+            s['open'] += row['count']
     for u in items:
-        u['open_tasks'] = await db.tasks.count_documents({'assignee_id': u['user_id'], 'status': {'$ne': 'done'}})
-        u['done_tasks'] = await db.tasks.count_documents({'assignee_id': u['user_id'], 'status': 'done'})
+        s = stats.get(u['user_id'], {'open': 0, 'done': 0})
+        u['open_tasks'] = s['open']
+        u['done_tasks'] = s['done']
     return items
 
 # ---------------------------------------------------------------------------
