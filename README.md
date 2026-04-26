@@ -158,7 +158,7 @@ This project is licensed under the MIT License.
 
 ## 👨‍💻 Author
 
-Developed by **Swayam Rawat**  **Lakshya Gupta**   **Parul Rana**
+Developed by **Swayam Rawat** , **Lakshya Gupta** ,  **Parul Rana**
 
 ---
 
