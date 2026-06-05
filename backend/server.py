@@ -1,0 +1,838 @@
+from dotenv import load_dotenv
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env')
+
+import os
+import asyncio
+import logging
+import uuid
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional, Literal
+
+import secrets
+import bcrypt
+import jwt as pyjwt
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, Field, EmailStr
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+mongo_url = os.environ['MONGO_URL']
+client = AsyncIOMotorClient(mongo_url)
+db = client[os.environ['DB_NAME']]
+
+JWT_SECRET = os.environ['JWT_SECRET']
+JWT_ALGO = 'HS256'
+
+Role = Literal['core_team', 'faculty', 'member']
+ROLES = {'core_team', 'faculty', 'member'}
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('moment_club')
+
+app = FastAPI(title='THE MOMENT CLUB')
+api = APIRouter(prefix='/api')
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def hash_password(pw: str) -> str:
+    return bcrypt.hashpw(pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def verify_password(pw: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(pw.encode('utf-8'), hashed.encode('utf-8'))
+    except Exception:
+        return False
+
+def create_access_token(user_id: str, email: str, role: str) -> str:
+    payload = {
+        'sub': user_id,
+        'email': email,
+        'role': role,
+        'type': 'access',
+        'exp': datetime.now(timezone.utc) + timedelta(days=7),
+    }
+    return pyjwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+def set_auth_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key='access_token',
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite='none',
+        max_age=7 * 24 * 3600,
+        path='/',
+    )
+
+def clear_auth_cookie(response: Response) -> None:
+    response.delete_cookie('access_token', path='/')
+
+async def _decode_jwt(token: str) -> Optional[dict]:
+    try:
+        return pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+    except pyjwt.PyJWTError:
+        return None
+
+async def get_current_user(request: Request) -> dict:
+    token = request.cookies.get('access_token')
+    if not token:
+        auth = request.headers.get('Authorization', '')
+        if auth.startswith('Bearer '):
+            token = auth[7:]
+    if not token:
+        raise HTTPException(status_code=401, detail='Not authenticated')
+
+    # Try JWT first
+    payload = await _decode_jwt(token)
+    if payload and payload.get('type') == 'access':
+        user = await db.users.find_one({'user_id': payload['sub']}, {'_id': 0, 'password_hash': 0})
+        if user:
+            return user
+
+    # Try Google session token
+    sess = await db.sessions.find_one({'session_token': token}, {'_id': 0})
+    if sess:
+        exp = sess.get('expires_at')
+        if isinstance(exp, str):
+            exp = datetime.fromisoformat(exp)
+        if exp and exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp and exp > datetime.now(timezone.utc):
+            user = await db.users.find_one({'user_id': sess['user_id']}, {'_id': 0, 'password_hash': 0})
+            if user:
+                return user
+    raise HTTPException(status_code=401, detail='Invalid or expired session')
+
+def require_roles(*allowed: str):
+    async def _dep(user: dict = Depends(get_current_user)) -> dict:
+        if user.get('role') not in allowed:
+            raise HTTPException(status_code=403, detail='Forbidden: insufficient role')
+        return user
+    return _dep
+
+async def send_email(to_emails: List[str], subject: str, html: str) -> None:
+    """Email sending is disabled in standalone mode. Logs to console instead."""
+    if not to_emails:
+        return
+    logger.info(f'[EMAIL STUB] To: {to_emails} | Subject: {subject}')
+
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+class RegisterIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    name: str
+    role: Role
+    student_id: Optional[str] = None
+    department: Optional[str] = None
+
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class EventIn(BaseModel):
+    title: str
+    description: str
+    date: str  # ISO date
+    location: str
+    category: str = 'Hackathon'
+    capacity: int = 100
+    image_url: Optional[str] = None
+    winners: List[str] = []
+    photos: List[str] = []
+    prize_pool: Optional[str] = None
+
+class NotificationIn(BaseModel):
+    message: str
+    active: bool = True
+
+class AnnouncementIn(BaseModel):
+    title: str
+    body: str
+
+class ProposalIn(BaseModel):
+    title: str
+    description: str
+
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+class ResetPasswordIn(BaseModel):
+    token: str
+    password: str = Field(min_length=6)
+
+class TaskIn(BaseModel):
+    title: str
+    description: Optional[str] = ''
+    status: str = 'todo'           # todo | in_progress | review | done
+    priority: str = 'medium'        # low | medium | high | urgent
+    assignee_id: Optional[str] = None
+    due_date: Optional[str] = None  # ISO date
+    tags: List[str] = []
+
+class TaskUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    assignee_id: Optional[str] = None
+    due_date: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+class EventUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    date: Optional[str] = None
+    location: Optional[str] = None
+    category: Optional[str] = None
+    capacity: Optional[int] = None
+    image_url: Optional[str] = None
+    winners: Optional[List[str]] = None
+    photos: Optional[List[str]] = None
+    prize_pool: Optional[str] = None
+
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
+@api.post('/auth/register')
+async def register(data: RegisterIn, response: Response):
+    email = data.email.lower()
+    if data.role not in ROLES:
+        raise HTTPException(status_code=400, detail='Invalid role')
+    if await db.users.find_one({'email': email}):
+        raise HTTPException(status_code=400, detail='Email already registered')
+    user_id = f'user_{uuid.uuid4().hex[:12]}'
+    approved = data.role != 'member'  # members need approval by core_team
+    doc = {
+        'user_id': user_id,
+        'email': email,
+        'password_hash': hash_password(data.password),
+        'name': data.name,
+        'role': data.role,
+        'student_id': data.student_id,
+        'department': data.department,
+        'approved': approved,
+        'picture': None,
+        'created_at': datetime.now(timezone.utc).isoformat(),
+    }
+    await db.users.insert_one(doc)
+    token = create_access_token(user_id, email, data.role)
+    set_auth_cookie(response, token)
+    doc.pop('password_hash', None)
+    doc.pop('_id', None)
+    return {'user': doc, 'access_token': token}
+
+@api.post('/auth/login')
+async def login(data: LoginIn, response: Response):
+    email = data.email.lower()
+    user = await db.users.find_one({'email': email})
+    if not user or not user.get('password_hash') or not verify_password(data.password, user['password_hash']):
+        raise HTTPException(status_code=401, detail='Invalid credentials')
+    token = create_access_token(user['user_id'], email, user['role'])
+    set_auth_cookie(response, token)
+    user.pop('password_hash', None)
+    user.pop('_id', None)
+    return {'user': user, 'access_token': token}
+
+@api.post('/auth/logout')
+async def logout(response: Response):
+    clear_auth_cookie(response)
+    return {'ok': True}
+
+@api.get('/auth/me')
+async def me(user: dict = Depends(get_current_user)):
+    return user
+
+@api.post('/auth/forgot-password')
+async def forgot_password(data: ForgotPasswordIn, request: Request):
+    email = data.email.lower()
+    user = await db.users.find_one({'email': email}, {'_id': 0})
+    # Always respond with success to avoid user enumeration
+    if user and user.get('password_hash'):
+        token = secrets.token_urlsafe(32)
+        await db.password_reset_tokens.insert_one({
+            'token': token,
+            'user_id': user['user_id'],
+            'email': email,
+            'expires_at': (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            'used': False,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+        })
+        origin = request.headers.get('origin') or request.headers.get('referer', '').rstrip('/')
+        reset_link = f"{origin}/reset-password?token={token}"
+        html = f"""
+        <div style="font-family:Helvetica,Arial,sans-serif;color:#111;max-width:520px;margin:auto;">
+          <h2 style="letter-spacing:-0.02em;">RESET YOUR PASSWORD</h2>
+          <p>Hello {user.get('name') or 'there'}, we received a request to reset your password for THE MOMENT CLUB.</p>
+          <p><a href="{reset_link}" style="display:inline-block;background:#000;color:#fff;padding:12px 20px;text-decoration:none;letter-spacing:0.1em;text-transform:uppercase;font-weight:700;">Reset password</a></p>
+          <p style="color:#666;font-size:12px;">Or copy this link: {reset_link}</p>
+          <p style="color:#666;font-size:12px;">This link expires in 1 hour. If you didn't request this, ignore this email.</p>
+          <p>— THE MOMENT CLUB</p>
+        </div>
+        """
+        logger.info(f'Password reset link for {email}: {reset_link}')
+        asyncio.create_task(send_email([email], '[THE MOMENT CLUB] Reset your password', html))
+    return {'ok': True, 'message': 'If an account exists for this email, a reset link has been sent.'}
+
+@api.post('/auth/reset-password')
+async def reset_password(data: ResetPasswordIn):
+    doc = await db.password_reset_tokens.find_one({'token': data.token}, {'_id': 0})
+    if not doc:
+        raise HTTPException(status_code=400, detail='Invalid or expired token')
+    if doc.get('used'):
+        raise HTTPException(status_code=400, detail='Token already used')
+    exp = doc.get('expires_at')
+    if isinstance(exp, str):
+        exp = datetime.fromisoformat(exp)
+    if exp and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if not exp or exp < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail='Invalid or expired token')
+    await db.users.update_one(
+        {'user_id': doc['user_id']},
+        {'$set': {'password_hash': hash_password(data.password)}},
+    )
+    await db.password_reset_tokens.update_one({'token': data.token}, {'$set': {'used': True}})
+    return {'ok': True}
+
+# Google OAuth removed — standalone mode uses email/password authentication only.
+
+# ---------------------------------------------------------------------------
+# Notifications (marquee bar)
+# ---------------------------------------------------------------------------
+@api.get('/notifications')
+async def list_notifications():
+    items = await db.notifications.find({'active': True}, {'_id': 0}).sort('created_at', -1).to_list(50)
+    return items
+
+@api.post('/notifications')
+async def create_notification(data: NotificationIn, user: dict = Depends(require_roles('core_team'))):
+    doc = {
+        'notif_id': f'notif_{uuid.uuid4().hex[:10]}',
+        'message': data.message,
+        'active': data.active,
+        'created_by': user['user_id'],
+        'created_at': datetime.now(timezone.utc).isoformat(),
+    }
+    await db.notifications.insert_one(doc)
+    doc.pop('_id', None)
+    return doc
+
+@api.delete('/notifications/{notif_id}')
+async def delete_notification(notif_id: str, user: dict = Depends(require_roles('core_team'))):
+    await db.notifications.delete_one({'notif_id': notif_id})
+    return {'ok': True}
+
+# ---------------------------------------------------------------------------
+# Events
+# ---------------------------------------------------------------------------
+@api.get('/events')
+async def list_events():
+    items = await db.events.find({}, {'_id': 0}).sort('date', 1).to_list(200)
+    return items
+
+@api.post('/events')
+async def create_event(data: EventIn, user: dict = Depends(require_roles('core_team'))):
+    doc = {
+        'event_id': f'evt_{uuid.uuid4().hex[:10]}',
+        **data.model_dump(),
+        'created_by': user['user_id'],
+        'created_at': datetime.now(timezone.utc).isoformat(),
+        'registered_count': 0,
+    }
+    await db.events.insert_one(doc)
+    doc.pop('_id', None)
+
+    # Notify approved members
+    members = await db.users.find({'role': 'member', 'approved': True}, {'_id': 0, 'email': 1}).to_list(500)
+    emails = [m['email'] for m in members]
+    html = f"""
+    <div style="font-family:Helvetica,Arial,sans-serif;color:#111;">
+      <h2 style="letter-spacing:-0.02em;">NEW EVENT · {doc['title']}</h2>
+      <p>{doc['description']}</p>
+      <p><strong>Date:</strong> {doc['date']}<br/><strong>Location:</strong> {doc['location']}</p>
+      <p>— THE MOMENT CLUB</p>
+    </div>
+    """
+    asyncio.create_task(send_email(emails, f"[THE MOMENT CLUB] {doc['title']}", html))
+    return doc
+
+@api.delete('/events/{event_id}')
+async def delete_event(event_id: str, user: dict = Depends(require_roles('core_team'))):
+    await db.events.delete_one({'event_id': event_id})
+    await db.event_registrations.delete_many({'event_id': event_id})
+    return {'ok': True}
+
+@api.post('/events/{event_id}/register')
+async def register_event(event_id: str, user: dict = Depends(get_current_user)):
+    evt = await db.events.find_one({'event_id': event_id}, {'_id': 0})
+    if not evt:
+        raise HTTPException(status_code=404, detail='Event not found')
+    exists = await db.event_registrations.find_one({'event_id': event_id, 'user_id': user['user_id']})
+    if exists:
+        raise HTTPException(status_code=400, detail='Already registered')
+    await db.event_registrations.insert_one({
+        'event_id': event_id,
+        'user_id': user['user_id'],
+        'user_email': user['email'],
+        'user_name': user['name'],
+        'registered_at': datetime.now(timezone.utc).isoformat(),
+    })
+    await db.events.update_one({'event_id': event_id}, {'$inc': {'registered_count': 1}})
+
+    # Confirmation email to participant
+    html = f"""
+    <div style="font-family:Helvetica,Arial,sans-serif;color:#111;max-width:520px;margin:auto;">
+      <h2 style="letter-spacing:-0.02em;">YOU'RE IN · {evt['title']}</h2>
+      <p>Hello {user.get('name') or 'builder'}, your registration for <strong>{evt['title']}</strong> is confirmed.</p>
+      <table style="border-collapse:collapse;margin:16px 0;">
+        <tr><td style="padding:4px 12px 4px 0;color:#666;">DATE</td><td style="padding:4px 0;">{evt.get('date','')}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666;">LOCATION</td><td style="padding:4px 0;">{evt.get('location','')}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666;">CATEGORY</td><td style="padding:4px 0;">{evt.get('category','')}</td></tr>
+      </table>
+      <p>{evt.get('description','')}</p>
+      <p>— THE MOMENT CLUB</p>
+    </div>
+    """
+    asyncio.create_task(send_email([user['email']], f"[THE MOMENT CLUB] Registered · {evt['title']}", html))
+    return {'ok': True}
+
+@api.get('/events/{event_id}/registrations')
+async def event_registrations(event_id: str, user: dict = Depends(require_roles('core_team', 'faculty'))):
+    items = await db.event_registrations.find({'event_id': event_id}, {'_id': 0}).to_list(500)
+    return items
+
+# ---------------------------------------------------------------------------
+# Announcements
+# ---------------------------------------------------------------------------
+@api.get('/announcements')
+async def list_announcements():
+    items = await db.announcements.find({}, {'_id': 0}).sort('created_at', -1).to_list(100)
+    return items
+
+@api.post('/announcements')
+async def create_announcement(data: AnnouncementIn, user: dict = Depends(require_roles('core_team', 'faculty'))):
+    doc = {
+        'ann_id': f'ann_{uuid.uuid4().hex[:10]}',
+        'title': data.title,
+        'body': data.body,
+        'author_name': user['name'],
+        'author_role': user['role'],
+        'created_at': datetime.now(timezone.utc).isoformat(),
+    }
+    await db.announcements.insert_one(doc)
+    doc.pop('_id', None)
+    return doc
+
+# ---------------------------------------------------------------------------
+# Members / Approvals / Directory
+# ---------------------------------------------------------------------------
+@api.get('/members')
+async def list_members(user: dict = Depends(require_roles('core_team', 'faculty'))):
+    items = await db.users.find({'role': 'member'}, {'_id': 0, 'password_hash': 0}).to_list(500)
+    return items
+
+@api.get('/members/pending')
+async def pending_members(user: dict = Depends(require_roles('core_team'))):
+    items = await db.users.find({'role': 'member', 'approved': False}, {'_id': 0, 'password_hash': 0}).to_list(500)
+    return items
+
+@api.post('/members/{user_id}/approve')
+async def approve_member(user_id: str, user: dict = Depends(require_roles('core_team'))):
+    r = await db.users.update_one({'user_id': user_id, 'role': 'member'}, {'$set': {'approved': True}})
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail='Member not found')
+    target = await db.users.find_one({'user_id': user_id}, {'_id': 0})
+    if target:
+        html = f"""<p>Hello {target['name']}, your membership to <strong>THE MOMENT CLUB</strong> has been approved. Welcome aboard.</p>"""
+        asyncio.create_task(send_email([target['email']], '[THE MOMENT CLUB] Membership Approved', html))
+    return {'ok': True}
+
+@api.post('/members/{user_id}/reject')
+async def reject_member(user_id: str, user: dict = Depends(require_roles('core_team'))):
+    await db.users.delete_one({'user_id': user_id, 'role': 'member', 'approved': False})
+    return {'ok': True}
+
+# ---------------------------------------------------------------------------
+# Proposals (Faculty approves)
+# ---------------------------------------------------------------------------
+@api.get('/proposals')
+async def list_proposals(user: dict = Depends(require_roles('core_team', 'faculty'))):
+    items = await db.proposals.find({}, {'_id': 0}).sort('created_at', -1).to_list(200)
+    return items
+
+@api.post('/proposals')
+async def create_proposal(data: ProposalIn, user: dict = Depends(require_roles('core_team'))):
+    doc = {
+        'proposal_id': f'prop_{uuid.uuid4().hex[:10]}',
+        'title': data.title,
+        'description': data.description,
+        'status': 'pending',
+        'submitted_by': user['name'],
+        'submitted_by_id': user['user_id'],
+        'created_at': datetime.now(timezone.utc).isoformat(),
+    }
+    await db.proposals.insert_one(doc)
+    doc.pop('_id', None)
+    return doc
+
+@api.post('/proposals/{proposal_id}/{decision}')
+async def decide_proposal(proposal_id: str, decision: str, user: dict = Depends(require_roles('faculty'))):
+    if decision not in ('approve', 'reject'):
+        raise HTTPException(status_code=400, detail='Invalid decision')
+    status = 'approved' if decision == 'approve' else 'rejected'
+    r = await db.proposals.update_one(
+        {'proposal_id': proposal_id},
+        {'$set': {'status': status, 'decided_by': user['name'], 'decided_at': datetime.now(timezone.utc).isoformat()}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail='Proposal not found')
+    return {'ok': True, 'status': status}
+
+# ---------------------------------------------------------------------------
+# Tasks (ClickUp-style)
+# ---------------------------------------------------------------------------
+TASK_STATUSES = {'todo', 'in_progress', 'review', 'done'}
+TASK_PRIORITIES = {'low', 'medium', 'high', 'urgent'}
+
+async def _resolve_assignee(assignee_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    if not assignee_id:
+        return None, None
+    u = await db.users.find_one({'user_id': assignee_id}, {'_id': 0, 'name': 1, 'user_id': 1})
+    if not u:
+        return None, None
+    return u['user_id'], u['name']
+
+@api.get('/tasks')
+async def list_tasks(user: dict = Depends(require_roles('core_team', 'faculty'))):
+    items = await db.tasks.find({}, {'_id': 0}).sort('created_at', -1).to_list(500)
+    return items
+
+@api.post('/tasks')
+async def create_task(data: TaskIn, user: dict = Depends(require_roles('core_team'))):
+    if data.status not in TASK_STATUSES:
+        raise HTTPException(status_code=400, detail='Invalid status')
+    if data.priority not in TASK_PRIORITIES:
+        raise HTTPException(status_code=400, detail='Invalid priority')
+    assignee_id, assignee_name = await _resolve_assignee(data.assignee_id)
+    doc = {
+        'task_id': f'task_{uuid.uuid4().hex[:10]}',
+        'title': data.title,
+        'description': data.description or '',
+        'status': data.status,
+        'priority': data.priority,
+        'assignee_id': assignee_id,
+        'assignee_name': assignee_name,
+        'due_date': data.due_date,
+        'tags': data.tags or [],
+        'created_by': user['user_id'],
+        'created_by_name': user['name'],
+        'created_at': datetime.now(timezone.utc).isoformat(),
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    }
+    await db.tasks.insert_one(doc)
+    doc.pop('_id', None)
+    return doc
+
+@api.patch('/tasks/{task_id}')
+async def update_task(task_id: str, data: TaskUpdate, user: dict = Depends(require_roles('core_team'))):
+    updates = {k: v for k, v in data.model_dump(exclude_unset=True).items() if v is not None}
+    if 'status' in updates and updates['status'] not in TASK_STATUSES:
+        raise HTTPException(status_code=400, detail='Invalid status')
+    if 'priority' in updates and updates['priority'] not in TASK_PRIORITIES:
+        raise HTTPException(status_code=400, detail='Invalid priority')
+    if 'assignee_id' in updates:
+        aid, aname = await _resolve_assignee(updates['assignee_id'])
+        updates['assignee_id'] = aid
+        updates['assignee_name'] = aname
+    updates['updated_at'] = datetime.now(timezone.utc).isoformat()
+    r = await db.tasks.update_one({'task_id': task_id}, {'$set': updates})
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail='Task not found')
+    doc = await db.tasks.find_one({'task_id': task_id}, {'_id': 0})
+    return doc
+
+@api.delete('/tasks/{task_id}')
+async def delete_task(task_id: str, user: dict = Depends(require_roles('core_team'))):
+    await db.tasks.delete_one({'task_id': task_id})
+    return {'ok': True}
+
+# ---------------------------------------------------------------------------
+# Team directory (for task assignment)
+# ---------------------------------------------------------------------------
+@api.get('/team')
+async def list_team(user: dict = Depends(require_roles('core_team', 'faculty'))):
+    items = await db.users.find(
+        {'role': {'$in': ['core_team', 'faculty']}},
+        {'_id': 0, 'password_hash': 0},
+    ).to_list(200)
+    # Single aggregation to compute task counts for all assignees at once
+    agg = await db.tasks.aggregate([
+        {'$match': {'assignee_id': {'$ne': None}}},
+        {'$group': {
+            '_id': {'assignee_id': '$assignee_id', 'done': {'$eq': ['$status', 'done']}},
+            'count': {'$sum': 1},
+        }},
+    ]).to_list(1000)
+    stats: dict = {}
+    for row in agg:
+        aid = row['_id']['assignee_id']
+        s = stats.setdefault(aid, {'open': 0, 'done': 0})
+        if row['_id']['done']:
+            s['done'] += row['count']
+        else:
+            s['open'] += row['count']
+    for u in items:
+        s = stats.get(u['user_id'], {'open': 0, 'done': 0})
+        u['open_tasks'] = s['open']
+        u['done_tasks'] = s['done']
+    return items
+
+# ---------------------------------------------------------------------------
+# Event update / past events
+# ---------------------------------------------------------------------------
+@api.patch('/events/{event_id}')
+async def update_event(event_id: str, data: EventUpdate, user: dict = Depends(require_roles('core_team'))):
+    updates = {k: v for k, v in data.model_dump(exclude_unset=True).items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail='No fields to update')
+    updates['updated_at'] = datetime.now(timezone.utc).isoformat()
+    r = await db.events.update_one({'event_id': event_id}, {'$set': updates})
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail='Event not found')
+    doc = await db.events.find_one({'event_id': event_id}, {'_id': 0})
+    return doc
+
+@api.get('/events/past')
+async def list_past_events():
+    today = datetime.now(timezone.utc).date().isoformat()
+    items = await db.events.find({'date': {'$lt': today}}, {'_id': 0}).sort('date', -1).to_list(200)
+    return items
+
+@api.get('/events/upcoming')
+async def list_upcoming_events():
+    today = datetime.now(timezone.utc).date().isoformat()
+    items = await db.events.find({'date': {'$gte': today}}, {'_id': 0}).sort('date', 1).to_list(200)
+    return items
+
+# ---------------------------------------------------------------------------
+# My registrations
+# ---------------------------------------------------------------------------
+@api.get('/me/registrations')
+async def my_registrations(user: dict = Depends(get_current_user)):
+    items = await db.event_registrations.find({'user_id': user['user_id']}, {'_id': 0}).to_list(200)
+    return items
+
+# ---------------------------------------------------------------------------
+# Public stats
+# ---------------------------------------------------------------------------
+@api.get('/stats')
+async def stats():
+    return {
+        'events': await db.events.count_documents({}),
+        'members': await db.users.count_documents({'role': 'member', 'approved': True}),
+        'hackathons': await db.events.count_documents({'category': 'Hackathon'}),
+    }
+
+@api.get('/')
+async def root():
+    return {'app': 'THE MOMENT CLUB', 'status': 'ok'}
+
+app.include_router(api)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['*'],
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
+
+# ---------------------------------------------------------------------------
+# Startup: indexes + seed
+# ---------------------------------------------------------------------------
+@app.on_event('startup')
+async def startup():
+    await db.users.create_index('email', unique=True)
+    await db.users.create_index('user_id', unique=True)
+    await db.sessions.create_index('session_token', unique=True)
+    await db.events.create_index('event_id', unique=True)
+    await db.tasks.create_index('task_id', unique=True)
+    await db.password_reset_tokens.create_index('token', unique=True)
+
+    admin_email = os.environ.get('ADMIN_EMAIL', 'core@themomentclub.in').lower()
+    admin_pw = os.environ.get('ADMIN_PASSWORD', 'admin123')
+    existing = await db.users.find_one({'email': admin_email})
+    if not existing:
+        await db.users.insert_one({
+            'user_id': f'user_{uuid.uuid4().hex[:12]}',
+            'email': admin_email,
+            'password_hash': hash_password(admin_pw),
+            'name': 'Core Admin',
+            'role': 'core_team',
+            'approved': True,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info(f'Seeded admin: {admin_email}')
+    elif not verify_password(admin_pw, existing.get('password_hash', '')):
+        await db.users.update_one({'email': admin_email}, {'$set': {'password_hash': hash_password(admin_pw)}})
+
+    # Seed sample notifications if empty
+    if await db.notifications.count_documents({}) == 0:
+        for msg in [
+            'REGISTRATION OPEN · HACKNITE 2026 · 48 HOURS · CU MAIN AUDITORIUM',
+            'WORKSHOP · SYSTEM DESIGN WITH STAFF ENGINEERS · FEB 28',
+            'APPLY NOW · CORE TEAM INDUCTIONS · BATCH 2026',
+        ]:
+            await db.notifications.insert_one({
+                'notif_id': f'notif_{uuid.uuid4().hex[:10]}',
+                'message': msg,
+                'active': True,
+                'created_by': 'seed',
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            })
+
+    # Seed sample events if empty
+    if await db.events.count_documents({}) == 0:
+        samples = [
+            {
+                'event_id': f'evt_{uuid.uuid4().hex[:10]}',
+                'title': 'HACKNITE 2026',
+                'description': '48-hour flagship hackathon. Build products that matter. Prizes worth ₹3L.',
+                'date': '2026-09-20',
+                'location': 'CU Main Auditorium',
+                'category': 'Hackathon',
+                'capacity': 300,
+                'image_url': 'https://images.unsplash.com/photo-1504384308090-c894fdcc538d?auto=format&fit=crop&w=940&q=80',
+                'registered_count': 0,
+                'winners': [],
+                'photos': [],
+                'prize_pool': '₹3,00,000',
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                'event_id': f'evt_{uuid.uuid4().hex[:10]}',
+                'title': 'SYSTEM DESIGN WORKSHOP',
+                'description': 'Deep dive with staff engineers from top product companies.',
+                'date': '2026-06-14',
+                'location': 'Block D · Room 204',
+                'category': 'Workshop',
+                'capacity': 80,
+                'image_url': 'https://images.pexels.com/photos/5380607/pexels-photo-5380607.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                'registered_count': 0,
+                'winners': [],
+                'photos': [],
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                'event_id': f'evt_{uuid.uuid4().hex[:10]}',
+                'title': 'TECH TALK · AI AT SCALE',
+                'description': 'A guest lecture on production ML systems and vector infrastructure.',
+                'date': '2026-05-30',
+                'location': 'CU Auditorium 2',
+                'category': 'Tech Talk',
+                'capacity': 200,
+                'image_url': 'https://images.unsplash.com/photo-1646059525996-3510c86159f8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzOTB8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjB1bml2ZXJzaXR5JTIwYXJjaGl0ZWN0dXJlfGVufDB8fHxibGFja19hbmRfd2hpdGV8MTc3NjY3NTUzMnww&ixlib=rb-4.1.0&q=85',
+                'registered_count': 0,
+                'winners': [],
+                'photos': [],
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            },
+            # PAST EVENTS
+            {
+                'event_id': f'evt_{uuid.uuid4().hex[:10]}',
+                'title': 'HACKNITE 2025',
+                'description': 'Our flagship hackathon — 280 builders, 62 teams, 48 caffeine-fuelled hours.',
+                'date': '2025-10-18',
+                'location': 'CU Main Auditorium',
+                'category': 'Hackathon',
+                'capacity': 300,
+                'image_url': 'https://images.pexels.com/photos/7102/notes-macbook-study-conference.jpg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                'registered_count': 280,
+                'winners': ['Team Void — AI code-review agent', 'Team Halcyon — realtime ops dashboard', 'Team Parallel — WASM sandbox'],
+                'photos': [
+                    'https://images.pexels.com/photos/2977565/pexels-photo-2977565.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                    'https://images.pexels.com/photos/1181273/pexels-photo-1181273.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                    'https://images.pexels.com/photos/1181354/pexels-photo-1181354.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                ],
+                'prize_pool': '₹2,50,000',
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                'event_id': f'evt_{uuid.uuid4().hex[:10]}',
+                'title': 'DEVCONF · SPRING 2025',
+                'description': 'A single-day conference with talks from Razorpay, Zerodha and Swiggy engineers.',
+                'date': '2025-04-12',
+                'location': 'CU Auditorium 2',
+                'category': 'Conference',
+                'capacity': 400,
+                'image_url': 'https://images.pexels.com/photos/1181298/pexels-photo-1181298.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                'registered_count': 385,
+                'winners': [],
+                'photos': [
+                    'https://images.pexels.com/photos/1181263/pexels-photo-1181263.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                    'https://images.pexels.com/photos/1181677/pexels-photo-1181677.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                ],
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                'event_id': f'evt_{uuid.uuid4().hex[:10]}',
+                'title': 'OPEN SOURCE SUMMIT · 2024',
+                'description': 'Contributors day — 120 PRs merged across 14 Indian OSS projects.',
+                'date': '2024-11-23',
+                'location': 'Block D · Lab 3',
+                'category': 'Summit',
+                'capacity': 150,
+                'image_url': 'https://images.pexels.com/photos/5077047/pexels-photo-5077047.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                'registered_count': 144,
+                'winners': ['Top contributor — Aarav M.', 'Best first-PR — Ishita S.'],
+                'photos': [
+                    'https://images.pexels.com/photos/3861969/pexels-photo-3861969.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+                ],
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            },
+        ]
+        await db.events.insert_many(samples)
+
+    # Seed sample tasks if empty
+    if await db.tasks.count_documents({}) == 0:
+        admin_user = await db.users.find_one({'email': admin_email}, {'_id': 0})
+        admin_id = admin_user['user_id'] if admin_user else None
+        admin_name = admin_user['name'] if admin_user else None
+        sample_tasks = [
+            ('Finalize HACKNITE 2026 venue contract', 'urgent', 'todo', '2026-03-01'),
+            ('Design hackathon poster v2', 'high', 'in_progress', '2026-02-26'),
+            ('Reach out to sponsors (Razorpay, Zerodha)', 'high', 'in_progress', '2026-02-25'),
+            ('Book judges for tech-talk', 'medium', 'review', '2026-02-24'),
+            ('Close Q1 budget review', 'low', 'done', '2026-02-15'),
+            ('Update member onboarding doc', 'medium', 'todo', None),
+        ]
+        for t, prio, status, due in sample_tasks:
+            await db.tasks.insert_one({
+                'task_id': f'task_{uuid.uuid4().hex[:10]}',
+                'title': t,
+                'description': '',
+                'status': status,
+                'priority': prio,
+                'assignee_id': admin_id,
+                'assignee_name': admin_name,
+                'due_date': due,
+                'tags': [],
+                'created_by': admin_id,
+                'created_by_name': admin_name,
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            })
+
+@app.on_event('shutdown')
+async def shutdown():
+    client.close()

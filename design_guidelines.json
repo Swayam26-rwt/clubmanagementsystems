@@ -1,0 +1,149 @@
+{
+  "theme_and_archetype": {
+    "domain": "Tech Club Management / University Events",
+    "theme": "LIGHT/DARK High-Contrast Toggle (Default: DARK)",
+    "archetype": "Archetype 4 (Swiss & High-Contrast)",
+    "vibe": "Authority, Clarity, Functional, Brutalist, Minimalistic Modern Black and White",
+    "rationale": "For a tech-based club ('THE MOMENT CLUB') hosting hackathons, a pure monochrome aesthetic communicates precision, cutting-edge technology, and modernism. Color is stripped away to focus entirely on function and typography."
+  },
+  "typography": {
+    "strategy": "The Swiss Brutalist (Tech/Art)",
+    "fonts": {
+      "heading": "Outfit, sans-serif",
+      "body": "IBM Plex Sans, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl font-black tracking-tighter uppercase",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight uppercase",
+      "h3": "text-xl sm:text-2xl font-semibold tracking-tight",
+      "h4": "text-lg sm:text-xl font-medium",
+      "body": "text-base leading-relaxed font-light",
+      "small": "text-sm font-light tracking-wide",
+      "overline": "text-xs font-bold uppercase tracking-[0.2em]"
+    },
+    "rules": [
+      "Headings must use tight letter spacing (tracking-tight or tracking-tighter).",
+      "No generic 'Inter' for headings. Use Outfit for high impact.",
+      "Never center text by default. Use explicit alignment. Keep paragraphs left-aligned for readability."
+    ]
+  },
+  "colors": {
+    "palette": {
+      "base_light": "#FFFFFF",
+      "base_dark": "#0A0A0A",
+      "surface_light": "#F5F5F5",
+      "surface_dark": "#171717",
+      "border_light": "rgba(0,0,0,0.1)",
+      "border_dark": "rgba(255,255,255,0.1)",
+      "text_primary_light": "#000000",
+      "text_primary_dark": "#FFFFFF",
+      "text_secondary_light": "#666666",
+      "text_secondary_dark": "#A3A3A3",
+      "accent": "#FFFFFF"
+    },
+    "rules": [
+      "Strict monochrome. No purple, no teal. No generic SaaS blue.",
+      "Use Pure White (#FFFFFF) and Deep Obsidian (#0A0A0A) as primary anchors.",
+      "Ensure text meets APCA standards. Contrast must be absolute.",
+      "Hover states must inverse colors (e.g., Black button becomes White with Black text)."
+    ]
+  },
+  "spacing_and_layout": {
+    "strategy": "Generous Spacing & Strict Grids",
+    "containers": "p-6 md:p-12 lg:p-20",
+    "marketing_layout": {
+      "type": "The Swiss Grid / Bento",
+      "description": "Asymmetry, wide gaps (gap-8 to gap-12). Overlapping elements, stark divisions."
+    },
+    "dashboard_layout": {
+      "type": "The Control Room",
+      "description": "Dense, compact spacing (gap-4 or gap-6). 1px sharp solid borders. No soft shadows. Cardless flat surfaces."
+    },
+    "rules": [
+      "Containers with borders must have internal padding (p-6 or p-8).",
+      "Mobile-first responsive (always start with grid-cols-1).",
+      "Never fill 100% of the grid perfectly in marketing pages; leave negative space."
+    ]
+  },
+  "surfaces_and_micro_themes": {
+    "dashboard_cards": "Flat solid background (surface color), 1px sharp border (border-border), rounded-none or max rounded-sm (2px). NO SHADOWS.",
+    "header": "Crystal Glass variant: backdrop-blur-xl bg-black/60 (dark mode) or bg-white/70 (light mode) with a 1px delicate inner stroke at the bottom.",
+    "buttons": "Sharp edges (rounded-none). High contrast. Solid fill or 1px outline."
+  },
+  "components_required": [
+    "react-fast-marquee",
+    "framer-motion",
+    "lucide-react",
+    "clsx",
+    "tailwind-merge"
+  ],
+  "ui_components": {
+    "shadcn": [
+      "button",
+      "input",
+      "card",
+      "dialog",
+      "tabs",
+      "table",
+      "select",
+      "form"
+    ],
+    "customizations": [
+      "Strip Shadcn's default rounded-md to rounded-none or rounded-sm.",
+      "Remove all default box-shadows.",
+      "Tabs: Use strict underline styles or monochrome block toggles.",
+      "Marquee: Use pure CSS or react-fast-marquee. Text must be large, uppercase, outline style (text-transparent stroke-white) for high energy."
+    ]
+  },
+  "interactions_and_motion": {
+    "hover_states": "Invert colors on hover. Example: hover:bg-white hover:text-black transition-colors duration-200.",
+    "transitions": "Fast, mechanical transitions. duration-150 or duration-200. No bouncy springs.",
+    "entrance": "Staggered fade and slide-up (translate-y-4) for lists and dashboard elements using Framer Motion."
+  },
+  "media": {
+    "rules": "All images must be black and white. Use gradient overlays (bg-gradient-to-t from-black via-black/50 to-transparent) to ensure text contrast.",
+    "assets": {
+      "club_logo": {
+        "url": "https://static.prod-images.emergentagent.com/jobs/cb8b44b8-c919-4adb-aebd-9c5c55d5c593/images/a8ae82c6f946840fc19e864acf0e87f3a984f6cf419f51591445569f3e1a2f0b.png",
+        "description": "Minimalist modern logo typography for THE MOMENT CLUB."
+      },
+      "hero_background": {
+        "url": "https://static.prod-images.emergentagent.com/jobs/cb8b44b8-c919-4adb-aebd-9c5c55d5c593/images/a33438b75219f366bf7dcd8064e8d8c7fe5630e96ee52ab407618a15cd28b71a.png",
+        "description": "Abstract minimalist black and white geometric shapes, tech network lines for the landing page hero section."
+      },
+      "event_hackathon_1": {
+        "url": "https://images.pexels.com/photos/5380607/pexels-photo-5380607.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Dark room coding session. Use for 'About Us' or Tech events."
+      },
+      "event_hackathon_2": {
+        "url": "https://static.prod-images.emergentagent.com/jobs/cb8b44b8-c919-4adb-aebd-9c5c55d5c593/images/2efaa331173c3cc6305b29b378693e2d5900c40169218ba127627f3ad5fa7e09.png",
+        "description": "High-end photography of developers at a hackathon. Use for Event Cards."
+      },
+      "campus_architecture": {
+        "url": "https://images.unsplash.com/photo-1646059525996-3510c86159f8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzOTB8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjB1bml2ZXJzaXR5JTIwYXJjaGl0ZWN0dXJlfGVufDB8fHxibGFja19hbmRfd2hpdGV8MTc3NjY3NTUzMnww&ixlib=rb-4.1.0&q=85",
+        "description": "Modern architecture. Use for 'About Club' background or context imagery."
+      }
+    }
+  },
+  "testing": {
+    "attributes": [
+      "All interactive elements MUST include a data-testid attribute.",
+      "Convention: kebab-case, role-based. Example: data-testid='login-faculty-tab', data-testid='register-submit-button', data-testid='event-card-hackathon'."
+    ]
+  },
+  "instructions_to_main_agent": {
+    "overall_direction": "You are building a hybrid platform. The landing page must be a creative, highly-visual marketing experience with a 'Kinetic Texture' marquee and overlapping Bento grids. The dashboards must be strictly functional 'Control Rooms' with dense data presentation and zero decorative fluff.",
+    "page_specifics": [
+      "Landing Page: Implement a fixed crystal-glass header. Use the `hero_background` image with a dark overlay. Below the hero, run a `react-fast-marquee` displaying latest tech notifications.",
+      "Auth Pages: Minimalist split layout. Left side stark black with the `club_logo` and tagline. Right side stark white/dark grey form with Shadcn Tabs for Role selection (Core / Faculty / Member).",
+      "Dashboards: Use a grid-cols-1 md:grid-cols-4 layout with a sidebar. Tables must have sharp borders (border-collapse). No generic Vercel look."
+    ],
+    "strict_rules": [
+      "Never use placeholder URLs (via.placeholder.com). ONLY use the media URLs provided.",
+      "Do not use generic fonts for Headings. Stick to the font strategy.",
+      "Do not add any colored gradients. Only use black, white, and grayscale.",
+      "Always apply data-testid to buttons, inputs, and links."
+    ]
+  }
+}
