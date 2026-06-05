@@ -192,8 +192,7 @@ The app will be available at `http://localhost:3000`
 
 Built with ❤️ by:
 - **Swayam Rawat**
-- **Lakshya Gupta**
-- **Parul Rana**
+
 
 ---
 
