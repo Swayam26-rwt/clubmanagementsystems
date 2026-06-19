@@ -27,6 +27,12 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 JWT_SECRET = os.environ['JWT_SECRET']
+
+# CORS: set ALLOWED_ORIGIN to your Vercel URL in production
+# e.g. https://your-app.vercel.app
+# Multiple origins can be comma-separated
+_raw_origins = os.environ.get('ALLOWED_ORIGIN', 'http://localhost:3000')
+ALLOWED_ORIGINS = [o.strip().rstrip('/') for o in _raw_origins.split(',') if o.strip()]
 JWT_ALGO = 'HS256'
 
 Role = Literal['core_team', 'faculty', 'member']
@@ -651,7 +657,7 @@ app.include_router(api)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*'],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],
@@ -685,6 +691,27 @@ async def startup():
         logger.info(f'Seeded admin: {admin_email}')
     elif not verify_password(admin_pw, existing.get('password_hash', '')):
         await db.users.update_one({'email': admin_email}, {'$set': {'password_hash': hash_password(admin_pw)}})
+
+    # Seed test accounts for demo/testing (password: testpass123)
+    test_accounts = [
+        {'email': 'core.test@momentclub.in', 'name': 'Core Tester', 'role': 'core_team'},
+        {'email': 'faculty.test@momentclub.in', 'name': 'Faculty Tester', 'role': 'faculty'},
+        {'email': 'member.test@momentclub.in', 'name': 'Member Tester', 'role': 'member'},
+    ]
+    test_password = 'testpass123'
+    for acct in test_accounts:
+        existing_test = await db.users.find_one({'email': acct['email']})
+        if not existing_test:
+            await db.users.insert_one({
+                'user_id': f'user_{uuid.uuid4().hex[:12]}',
+                'email': acct['email'],
+                'password_hash': hash_password(test_password),
+                'name': acct['name'],
+                'role': acct['role'],
+                'approved': True,
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            })
+            logger.info(f'Seeded test account: {acct["email"]}')
 
     # Seed sample notifications if empty
     if await db.notifications.count_documents({}) == 0:

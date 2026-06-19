@@ -15,7 +15,22 @@ A full-stack **Club Management System** for college organizations — built for 
 
 ## 🌐 Live Demo
 
-> Coming soon — deploy using the instructions below.
+| Service | URL |
+|---------|-----|
+| **Frontend** | [clubmanagementsystems.vercel.app](https://clubmanagementsystems.vercel.app) |
+| **Backend API** | [club-backendclubmanagementsystems-1.onrender.com](https://club-backendclubmanagementsystems-1.onrender.com) |
+
+> **Note:** The backend runs on Render free tier — first request after inactivity may take ~30 seconds to cold-start.
+
+### 🔑 Test Credentials
+
+All test accounts are **auto-seeded** on server startup. Use them to explore different roles:
+
+| Role | Email | Password |
+|------|-------|----------|
+| **Core Team (Admin)** | `core.test@momentclub.in` | `testpass123` |
+| **Faculty** | `faculty.test@momentclub.in` | `testpass123` |
+| **Member** | `member.test@momentclub.in` | `testpass123` |
 
 ---
 
