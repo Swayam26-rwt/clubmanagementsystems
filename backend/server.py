@@ -33,6 +33,14 @@ JWT_SECRET = os.environ['JWT_SECRET']
 # Multiple origins can be comma-separated
 _raw_origins = os.environ.get('ALLOWED_ORIGIN', 'http://localhost:3000')
 ALLOWED_ORIGINS = [o.strip().rstrip('/') for o in _raw_origins.split(',') if o.strip()]
+# Always include the production frontend URL and localhost for development
+_default_origins = [
+    'https://clubmanagementsystems.vercel.app',
+    'http://localhost:3000',
+]
+for _o in _default_origins:
+    if _o not in ALLOWED_ORIGINS:
+        ALLOWED_ORIGINS.append(_o)
 JWT_ALGO = 'HS256'
 
 Role = Literal['core_team', 'faculty', 'member']
